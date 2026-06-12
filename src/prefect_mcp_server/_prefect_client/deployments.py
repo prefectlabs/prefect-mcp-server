@@ -38,6 +38,7 @@ async def fetch_flow_names(client, flow_ids: list[UUID]) -> dict[UUID, str | Non
 async def get_deployments(
     filter: dict[str, Any] | None = None,
     limit: int = 50,
+    workspace_id: str | None = None,
 ) -> DeploymentsResult:
     """Get deployments with optional filters.
 
@@ -47,7 +48,7 @@ async def get_deployments(
     detail = is_detail_query(filter)
 
     try:
-        async with get_prefect_client() as client:
+        async with get_prefect_client(workspace_id=workspace_id) as client:
             # Build filter from JSON if provided
             deployment_filter = None
             if filter:
@@ -81,6 +82,7 @@ async def get_deployments(
                     work_pools_result = await get_work_pools(
                         filter={"name": {"any_": work_pool_names}},
                         limit=len(work_pool_names),
+                        workspace_id=workspace_id,
                     )
                     if work_pools_result["success"]:
                         work_pools_map = {

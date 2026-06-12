@@ -12,6 +12,7 @@ from prefect_mcp_server.types import FlowsResult
 async def get_flows(
     filter: dict[str, Any] | None = None,
     limit: int = 50,
+    workspace_id: str | None = None,
 ) -> FlowsResult:
     """Get flows with optional filters.
 
@@ -23,7 +24,7 @@ async def get_flows(
         limit: Maximum number of flows to return
     """
     try:
-        async with get_prefect_client() as client:
+        async with get_prefect_client(workspace_id=workspace_id) as client:
             # Build filter from JSON if provided
             flow_filter = None
             if filter:

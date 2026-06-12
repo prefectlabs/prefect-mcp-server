@@ -15,10 +15,13 @@ from prefect_mcp_server.types import (
 )
 
 
-async def get_work_pool(work_pool_name: str) -> WorkPoolResult:
+async def get_work_pool(
+    work_pool_name: str,
+    workspace_id: str | None = None,
+) -> WorkPoolResult:
     """Get detailed information about a work pool including concurrency limits."""
     try:
-        async with get_prefect_client() as client:
+        async with get_prefect_client(workspace_id=workspace_id) as client:
             # Get work pool details
             work_pool = await client.read_work_pool(work_pool_name=work_pool_name)
 
@@ -84,6 +87,7 @@ async def get_work_pool(work_pool_name: str) -> WorkPoolResult:
 async def get_work_pools(
     filter: dict[str, Any] | None = None,
     limit: int = 50,
+    workspace_id: str | None = None,
 ) -> WorkPoolsResult:
     """Get work pools with optional filters.
 
@@ -93,7 +97,7 @@ async def get_work_pools(
     detail = is_detail_query(filter)
 
     try:
-        async with get_prefect_client() as client:
+        async with get_prefect_client(workspace_id=workspace_id) as client:
             from prefect.client.schemas.filters import WorkPoolFilter
 
             # Build filter from JSON if provided
