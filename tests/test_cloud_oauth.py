@@ -3,6 +3,9 @@
 from unittest.mock import AsyncMock, PropertyMock, patch
 
 import pytest
+from fastmcp.server.auth.providers.jwt import JWTVerifier
+from starlette.applications import Starlette
+from starlette.testclient import TestClient
 
 from prefect_mcp_server import cloud_oauth
 from prefect_mcp_server._prefect_client.client import get_prefect_client
@@ -43,10 +46,7 @@ async def test_get_prefect_client_uses_oauth_workspace() -> None:
             assert client is mock_client
 
     mock_client_cls.assert_called_once_with(
-        api=(
-            "https://api.prefect.cloud/api/accounts/account-1/"
-            "workspaces/workspace-1"
-        ),
+        api=("https://api.prefect.cloud/api/accounts/account-1/workspaces/workspace-1"),
         api_key="oauth-token",
     )
 
@@ -89,3 +89,26 @@ def test_workspace_ref_display_name_prefers_handles() -> None:
 
     assert workspace.display_name == "acme/prod"
     assert workspace.as_dict()["display_name"] == "acme/prod"
+
+
+def test_protected_resource_metadata_preserves_authorization_server_origin() -> None:
+    token_verifier = JWTVerifier(
+        public_key="notArealACCESStokenKEY",
+        issuer="AuthServerID",
+        audience="AuthServerID",
+        algorithm="HS256",
+        required_scopes=["prefect-cloud:workspaces"],
+        base_url="https://prefect-cloud-mcp-server.fastmcp.app",
+    )
+    provider = cloud_oauth.PrefectCloudRemoteAuthProvider(
+        token_verifier=token_verifier,
+        authorization_servers=[],
+        base_url="https://prefect-cloud-mcp-server.fastmcp.app",
+        scopes_supported=["prefect-cloud:workspaces"],
+    )
+
+    app = Starlette(routes=provider.get_routes("/mcp"))
+    response = TestClient(app).get("/.well-known/oauth-protected-resource/mcp")
+
+    assert response.status_code == 200
+    assert response.json()["authorization_servers"] == ["https://api.prefect.cloud"]

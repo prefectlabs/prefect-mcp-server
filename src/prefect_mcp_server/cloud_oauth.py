@@ -7,6 +7,7 @@ import json
 import os
 from dataclasses import dataclass
 from typing import Literal
+from urllib.parse import urlparse
 
 import httpx
 from fastmcp.server.auth import RemoteAuthProvider
@@ -14,6 +15,8 @@ from fastmcp.server.auth.providers.jwt import JWTVerifier
 from fastmcp.server.dependencies import get_access_token
 from pydantic import AnyHttpUrl, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from starlette.responses import JSONResponse, Response
+from starlette.routing import Route
 
 CloudEnvironment = Literal["local", "stg", "prod"]
 
@@ -107,6 +110,50 @@ class WorkspaceRef:
 settings = CloudOAuthSettings()
 
 
+class PrefectCloudRemoteAuthProvider(RemoteAuthProvider):
+    def get_routes(self, mcp_path: str | None = None) -> list[Route]:
+        self.set_mcp_path(mcp_path)
+        resource_url = self._get_resource_url(mcp_path)
+        if resource_url is None:
+            return []
+
+        metadata_path = (
+            f"/.well-known/oauth-protected-resource{urlparse(str(resource_url)).path}"
+        )
+
+        async def protected_resource_metadata(request):
+            if request.method == "OPTIONS":
+                return Response(
+                    headers={
+                        "Access-Control-Allow-Origin": "*",
+                        "Access-Control-Allow-Methods": "GET, OPTIONS",
+                        "Access-Control-Allow-Headers": "Content-Type, Authorization, MCP-Protocol-Version",
+                    }
+                )
+
+            return JSONResponse(
+                {
+                    "resource": str(resource_url).rstrip("/"),
+                    "authorization_servers": [settings.resolved_authorization_server],
+                    "scopes_supported": (
+                        self._scopes_supported
+                        if self._scopes_supported is not None
+                        else self.token_verifier.scopes_supported
+                    ),
+                    "bearer_methods_supported": ["header"],
+                },
+                headers={"Access-Control-Allow-Origin": "*"},
+            )
+
+        return [
+            Route(
+                metadata_path,
+                endpoint=protected_resource_metadata,
+                methods=["GET", "OPTIONS"],
+            )
+        ]
+
+
 def build_auth_provider() -> RemoteAuthProvider | None:
     """Build the FastMCP auth provider when hosted Cloud OAuth is configured."""
     if not settings.enabled:
@@ -123,7 +170,7 @@ def build_auth_provider() -> RemoteAuthProvider | None:
         required_scopes=["prefect-cloud:workspaces"],
         base_url=settings.resolved_public_base_url,
     )
-    return RemoteAuthProvider(
+    return PrefectCloudRemoteAuthProvider(
         token_verifier=token_verifier,
         authorization_servers=[AnyHttpUrl(settings.resolved_authorization_server)],
         base_url=settings.resolved_public_base_url,
