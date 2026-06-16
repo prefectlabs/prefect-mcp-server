@@ -415,7 +415,18 @@ class CloudIdentityInfo(TypedDict, total=False):
     self_serve: bool | None
 
 
-IdentityInfo = CloudIdentityInfo | ServerIdentityInfo
+class HostedCloudOAuthIdentityInfo(TypedDict, total=False):
+    """Identity information for hosted Prefect Cloud OAuth mode."""
+
+    api_url: str
+    auth_mode: str
+    grant_id: str | None
+    authorized_workspace_count: int
+    authorized_workspaces: list[dict[str, str | None]]
+    next_step: str
+
+
+IdentityInfo = CloudIdentityInfo | HostedCloudOAuthIdentityInfo | ServerIdentityInfo
 
 
 class IdentityResult(TypedDict):
