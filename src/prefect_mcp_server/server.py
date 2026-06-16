@@ -6,6 +6,7 @@ from typing import Annotated, Any, Literal
 import prefect.main  # noqa: F401 - Import to resolve Pydantic forward references
 from fastmcp import FastMCP
 from fastmcp.server import create_proxy
+from fastmcp.server.auth import AuthProvider
 from fastmcp.server.providers.proxy import ProxyClient
 from prefect.client.base import ServerType, determine_server_type
 from pydantic import Field
@@ -39,21 +40,6 @@ try:
 except ImportError:
     pass
 
-mcp = FastMCP("Prefect MCP Server", auth=cloud_oauth.build_auth_provider())
-
-# add middleware for per-request authentication via http headers
-mcp.add_middleware(PrefectAuthMiddleware())
-
-# Mount the Prefect docs MCP server to expose its tools
-docs_proxy = create_proxy(
-    ProxyClient(settings.docs_mcp.url, init_timeout=settings.docs_mcp.init_timeout),
-    name="Prefect Documentation Search",
-)
-mcp.mount(docs_proxy, namespace="docs")
-
-# Cloud-specific tools (conditionally mounted at end of file)
-cloud_mcp = FastMCP("Prefect Cloud Tools")
-
 WorkspaceId = Annotated[
     str | None,
     Field(
@@ -62,8 +48,6 @@ WorkspaceId = Annotated[
 ]
 
 
-# Tools
-@mcp.tool
 def orientation() -> str:
     """Use this tool to get oriented with the Prefect MCP server."""
     return """
@@ -75,7 +59,6 @@ def orientation() -> str:
     """
 
 
-@mcp.tool
 async def get_identity(
     workspace_id: WorkspaceId = None,
 ) -> IdentityResult:
@@ -87,7 +70,6 @@ async def get_identity(
     return await _prefect_client.get_identity(workspace_id=workspace_id)
 
 
-@mcp.tool
 async def list_authorized_workspaces() -> dict[str, object]:
     """List Prefect Cloud workspaces selected during OAuth consent.
 
@@ -105,7 +87,6 @@ async def list_authorized_workspaces() -> dict[str, object]:
     }
 
 
-@mcp.tool
 async def get_dashboard(
     workspace_id: WorkspaceId = None,
 ) -> DashboardResult:
@@ -118,7 +99,6 @@ async def get_dashboard(
     return await _prefect_client.fetch_dashboard(workspace_id=workspace_id)
 
 
-@mcp.tool
 async def get_deployments(
     workspace_id: WorkspaceId = None,
     filter: Annotated[
@@ -163,7 +143,6 @@ async def get_deployments(
     )
 
 
-@mcp.tool
 async def get_flows(
     workspace_id: WorkspaceId = None,
     filter: Annotated[
@@ -202,7 +181,6 @@ async def get_flows(
     )
 
 
-@mcp.tool
 async def get_flow_runs(
     workspace_id: WorkspaceId = None,
     filter: Annotated[
@@ -253,7 +231,6 @@ async def get_flow_runs(
     )
 
 
-@mcp.tool
 async def get_flow_run_logs(
     flow_run_id: Annotated[
         str,
@@ -283,7 +260,6 @@ async def get_flow_run_logs(
     )
 
 
-@mcp.tool
 async def get_task_runs(
     workspace_id: WorkspaceId = None,
     filter: Annotated[
@@ -327,7 +303,6 @@ async def get_task_runs(
     )
 
 
-@mcp.tool
 async def get_work_pools(
     workspace_id: WorkspaceId = None,
     filter: Annotated[
@@ -367,7 +342,6 @@ async def get_work_pools(
     )
 
 
-@mcp.tool
 async def read_events(
     workspace_id: WorkspaceId = None,
     event_type_prefix: Annotated[
@@ -422,7 +396,6 @@ async def read_events(
     )
 
 
-@mcp.tool
 async def get_automations(
     workspace_id: WorkspaceId = None,
     filter: Annotated[
@@ -464,7 +437,6 @@ async def get_automations(
     )
 
 
-@mcp.tool
 async def get_object_schema(
     object_type: Annotated[
         Literal["automation"],
@@ -483,8 +455,6 @@ async def get_object_schema(
         raise ValueError(f"Unknown object type: {object_type}")
 
 
-# Cloud-specific tools
-@cloud_mcp.tool
 async def review_rate_limits(
     since: Annotated[
         datetime | None,
@@ -528,6 +498,78 @@ async def review_rate_limits(
     return await _prefect_client.get_rate_limits(since=since, until=until)
 
 
-# Conditionally mount Cloud tools if connected to Prefect Cloud
-if determine_server_type() == ServerType.CLOUD or cloud_oauth.settings.enabled:
-    mcp.mount(cloud_mcp)
+CORE_TOOLS = (
+    orientation,
+    get_identity,
+    get_dashboard,
+    get_deployments,
+    get_flows,
+    get_flow_runs,
+    get_flow_run_logs,
+    get_task_runs,
+    get_work_pools,
+    read_events,
+    get_automations,
+    get_object_schema,
+)
+
+CLOUD_TOOLS = (review_rate_limits,)
+HOSTED_CLOUD_TOOLS = (list_authorized_workspaces,)
+
+
+def build_prefect_mcp_server(
+    *,
+    name: str = "Prefect MCP Server",
+    auth_provider: AuthProvider | None = None,
+    include_docs_proxy: bool = True,
+    include_cloud_tools: bool | None = None,
+    include_hosted_cloud_tools: bool = False,
+) -> FastMCP:
+    """Build a Prefect MCP server from shared tools and optional Cloud adapters."""
+    server = FastMCP(name, auth=auth_provider)
+    server.add_middleware(PrefectAuthMiddleware())
+
+    if include_docs_proxy:
+        docs_proxy = create_proxy(
+            ProxyClient(
+                settings.docs_mcp.url,
+                init_timeout=settings.docs_mcp.init_timeout,
+            ),
+            name="Prefect Documentation Search",
+        )
+        server.mount(docs_proxy, namespace="docs")
+
+    for tool in CORE_TOOLS:
+        server.add_tool(tool)
+
+    should_include_cloud_tools = (
+        include_cloud_tools
+        if include_cloud_tools is not None
+        else determine_server_type() == ServerType.CLOUD or cloud_oauth.settings.enabled
+    )
+    if should_include_cloud_tools:
+        for tool in CLOUD_TOOLS:
+            server.add_tool(tool)
+
+    if include_hosted_cloud_tools:
+        for tool in HOSTED_CLOUD_TOOLS:
+            server.add_tool(tool)
+
+    return server
+
+
+def build_hosted_cloud_mcp_server(*, include_docs_proxy: bool = True) -> FastMCP:
+    """Build the hosted Prefect Cloud MCP server."""
+    return build_prefect_mcp_server(
+        name="Prefect Cloud MCP Server",
+        auth_provider=cloud_oauth.build_auth_provider(require_enabled=True),
+        include_docs_proxy=include_docs_proxy,
+        include_cloud_tools=True,
+        include_hosted_cloud_tools=True,
+    )
+
+
+mcp = build_prefect_mcp_server(
+    auth_provider=cloud_oauth.build_auth_provider(),
+    include_hosted_cloud_tools=cloud_oauth.settings.enabled,
+)
