@@ -47,6 +47,20 @@ claude mcp add prefect --transport http https://your-server-name.fastmcp.app/mcp
 > [!NOTE]
 > When deploying to FastMCP Cloud, environment variables are configured on the FastMCP Cloud server itself, not in your client configuration. FastMCP's authentication secures access to your MCP server, while the MCP server uses your Prefect API key to access your Prefect instance.
 
+### Hosted Prefect Cloud OAuth mode
+
+Prefect-hosted Cloud OAuth deployments should use the hosted entrypoint:
+
+- server path: `src/prefect_mcp_server/hosted_cloud.py`
+- runtime secret: `PREFECT_MCP_CLOUD_AUTH_TOKEN_KEY`
+- optional environment selector: `PREFECT_MCP_CLOUD_ENVIRONMENT=stg` or `prod`
+
+This mode reuses the same read-only tool definitions as the local/API-key server,
+but authenticates MCP clients with Prefect Cloud OAuth and requires workspace
+tools to receive a `workspace_id` from the consented workspace set. If OAuth is
+not configured, the hosted entrypoint fails at import time instead of starting an
+unprotected server.
+
 <details>
 <summary>Multi-tenant deployments with HTTP headers</summary>
 

@@ -3,12 +3,18 @@
 from unittest.mock import AsyncMock, PropertyMock, patch
 
 import pytest
+from fastmcp import Client
 from fastmcp.server.auth.providers.jwt import JWTVerifier
 from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
 from prefect_mcp_server import cloud_oauth
 from prefect_mcp_server._prefect_client.client import get_prefect_client
+from prefect_mcp_server._prefect_client.identity import get_identity
+from prefect_mcp_server.server import (
+    build_hosted_cloud_mcp_server,
+    build_prefect_mcp_server,
+)
 
 
 async def test_get_prefect_client_uses_oauth_workspace() -> None:
@@ -76,6 +82,95 @@ async def test_get_prefect_client_requires_workspace_in_oauth_mode() -> None:
         with pytest.raises(RuntimeError, match="workspace_id is required"):
             async with get_prefect_client():
                 pass
+
+
+async def test_get_identity_describes_hosted_oauth_grant_without_workspace() -> None:
+    workspace = cloud_oauth.WorkspaceRef(
+        account_id="account-1",
+        account_handle="acme",
+        workspace_id="workspace-1",
+        workspace_handle="prod",
+    )
+
+    with (
+        patch(
+            "prefect_mcp_server.cloud_oauth.current_oauth_access_token",
+            return_value="header.eyJtY3BfZ3JhbnRfaWQiOiAiZ3JhbnQtMSJ9.signature",
+        ),
+        patch(
+            "prefect_mcp_server.cloud_oauth.CloudOAuthSettings.enabled",
+            new_callable=PropertyMock,
+            return_value=True,
+        ),
+        patch(
+            "prefect_mcp_server.cloud_oauth.CloudOAuthSettings.resolved_api_base_url",
+            new_callable=PropertyMock,
+            return_value="https://api.prefect.cloud",
+        ),
+        patch(
+            "prefect_mcp_server.cloud_oauth.list_authorized_workspaces",
+            AsyncMock(return_value=[workspace]),
+        ) as mock_list_authorized_workspaces,
+    ):
+        result = await get_identity()
+
+    assert result["success"] is True
+    assert result["identity"] == {
+        "api_url": "https://api.prefect.cloud",
+        "auth_mode": "prefect-cloud-oauth",
+        "grant_id": "grant-1",
+        "authorized_workspace_count": 1,
+        "authorized_workspaces": [workspace.as_dict()],
+        "next_step": "Pass one authorized workspace_id to workspace-scoped tools.",
+    }
+    mock_list_authorized_workspaces.assert_awaited_once_with(
+        "header.eyJtY3BfZ3JhbnRfaWQiOiAiZ3JhbnQtMSJ9.signature"
+    )
+
+
+async def test_default_server_excludes_hosted_cloud_workspace_tools() -> None:
+    server = build_prefect_mcp_server(
+        include_docs_proxy=False,
+        include_cloud_tools=False,
+        include_hosted_cloud_tools=False,
+    )
+
+    async with Client(server) as client:
+        tool_names = {tool.name for tool in await client.list_tools()}
+
+    assert "get_identity" in tool_names
+    assert "get_flow_runs" in tool_names
+    assert "list_authorized_workspaces" not in tool_names
+    assert "review_rate_limits" not in tool_names
+
+
+async def test_hosted_cloud_server_includes_oauth_workspace_tools(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        cloud_oauth.settings,
+        "auth_token_key",
+        "notArealACCESStokenKEY",
+    )
+
+    server = build_hosted_cloud_mcp_server(include_docs_proxy=False)
+
+    async with Client(server) as client:
+        tool_names = {tool.name for tool in await client.list_tools()}
+
+    assert "get_identity" in tool_names
+    assert "get_flow_runs" in tool_names
+    assert "list_authorized_workspaces" in tool_names
+    assert "review_rate_limits" in tool_names
+
+
+def test_hosted_cloud_server_requires_oauth_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(cloud_oauth.settings, "auth_token_key", None)
+
+    with pytest.raises(RuntimeError, match="PREFECT_MCP_CLOUD_AUTH_TOKEN_KEY"):
+        build_hosted_cloud_mcp_server()
 
 
 def test_workspace_ref_display_name_prefers_handles() -> None:

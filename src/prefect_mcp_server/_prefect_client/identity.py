@@ -1,11 +1,13 @@
 """Identity and connection information for Prefect MCP server."""
 
+from prefect_mcp_server import cloud_oauth
 from prefect_mcp_server._prefect_client.client import (
     get_prefect_client,
     get_prefect_cloud_client,
 )
 from prefect_mcp_server.types import (
     CloudIdentityInfo,
+    HostedCloudOAuthIdentityInfo,
     IdentityResult,
     ServerIdentityInfo,
     UserInfo,
@@ -15,6 +17,27 @@ from prefect_mcp_server.types import (
 async def get_identity(workspace_id: str | None = None) -> IdentityResult:
     """Get identity and connection information for the current Prefect instance."""
     try:
+        access_token = cloud_oauth.current_oauth_access_token()
+        if workspace_id is None and cloud_oauth.settings.enabled and access_token:
+            workspaces = await cloud_oauth.list_authorized_workspaces(access_token)
+            identity: HostedCloudOAuthIdentityInfo = {
+                "api_url": cloud_oauth.settings.resolved_api_base_url,
+                "auth_mode": "prefect-cloud-oauth",
+                "grant_id": cloud_oauth.grant_id_from_access_token(access_token),
+                "authorized_workspace_count": len(workspaces),
+                "authorized_workspaces": [
+                    workspace.as_dict() for workspace in workspaces
+                ],
+                "next_step": (
+                    "Pass one authorized workspace_id to workspace-scoped tools."
+                ),
+            }
+            return {
+                "success": True,
+                "identity": identity,
+                "error": None,
+            }
+
         async with get_prefect_client(workspace_id=workspace_id) as client:
             api_url = str(client.api_url)
 
