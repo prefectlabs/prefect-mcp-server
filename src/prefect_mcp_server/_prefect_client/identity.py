@@ -3,6 +3,7 @@
 from uuid import UUID
 
 from prefect.client.cloud import CloudUnauthorizedError
+from prefect.exceptions import PrefectHTTPStatusError
 
 from prefect_mcp_server import cloud_oauth
 from prefect_mcp_server._prefect_client.client import (
@@ -16,6 +17,18 @@ from prefect_mcp_server.types import (
     ServerIdentityInfo,
     UserInfo,
 )
+
+
+def _is_service_account_me_forbidden(exc: PrefectHTTPStatusError) -> bool:
+    if exc.response.status_code != 403:
+        return False
+
+    try:
+        detail = exc.response.json().get("detail")
+    except ValueError:
+        detail = None
+
+    return detail == "Only users (not service accounts) can access this endpoint."
 
 
 async def _get_cloud_oauth_identity(
@@ -77,6 +90,21 @@ async def get_identity(workspace_id: UUID | None = None) -> IdentityResult:
                         me_data = await cloud_client.get("/me/")
                     except CloudUnauthorizedError:
                         if cloud_oauth.settings.enabled and access_token:
+                            identity = await _get_cloud_oauth_identity(
+                                access_token, workspace_id=workspace_id
+                            )
+                            return {
+                                "success": True,
+                                "identity": identity,
+                                "error": None,
+                            }
+                        raise
+                    except PrefectHTTPStatusError as exc:
+                        if (
+                            cloud_oauth.settings.enabled
+                            and access_token
+                            and _is_service_account_me_forbidden(exc)
+                        ):
                             identity = await _get_cloud_oauth_identity(
                                 access_token, workspace_id=workspace_id
                             )
